@@ -84,3 +84,49 @@
 
 ;; Define non-fungible token
 (define-non-fungible-token property-token uint)
+
+
+;; Helper functions
+
+(define-private (calculate-platform-fee (amount uint))
+  (/ (* amount platform-fee-percentage) u1000)
+)
+
+(define-private (is-contract-owner)
+  (is-eq tx-sender contract-owner)
+)
+
+(define-private (transfer-token (token-id uint) (sender principal) (recipient principal))
+  (nft-transfer? property-token token-id sender recipient)
+)
+
+(define-private (log-transaction (property-id uint) (seller principal) (buyer principal) (amount uint) (tokens uint) (tx-type (string-ascii 20)))
+  (let ((tx-id (var-get total-transactions)))
+    (map-set property-transactions tx-id {
+      property-id: property-id,
+      seller: seller,
+      buyer: buyer,
+      amount: amount,
+      tokens: tokens,
+      block-height: block-height,
+      transaction-type: tx-type
+    })
+    (var-set total-transactions (+ tx-id u1))
+    tx-id
+  )
+)
+
+(define-private (add-to-user-properties (user principal) (property-id uint))
+  (let ((existing-properties (default-to { owned-properties: (list) } (map-get? user-properties user))))
+    (match (as-max-len? (append (get owned-properties existing-properties) property-id) u100)
+      success-result (begin
+        (map-set user-properties 
+          user
+          { owned-properties: success-result }
+        )
+        true
+      )
+      false
+    )
+  )
+)
