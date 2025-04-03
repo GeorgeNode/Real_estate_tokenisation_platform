@@ -419,3 +419,73 @@
     (ok true)
   )
 )
+
+
+;; Contract administration functions
+
+;; Pause/Unpause the contract
+(define-public (set-contract-pause (paused bool))
+  (begin
+    (asserts! (is-contract-owner) err-owner-only)
+    (var-set contract-paused paused)
+    (ok true)
+  )
+)
+
+;; Withdraw platform fees
+(define-public (withdraw-platform-fees (amount uint))
+  (begin
+    (asserts! (is-contract-owner) err-owner-only)
+    (asserts! (<= amount (var-get platform-revenue)) err-insufficient-tokens)
+    (try! (as-contract (stx-transfer? amount contract-owner tx-sender)))
+    (var-set platform-revenue (- (var-get platform-revenue) amount))
+    (ok true)
+  )
+)
+
+
+;; Read-only functions
+
+;; Get property details
+(define-read-only (get-property (property-id uint))
+  (map-get? properties property-id)
+)
+
+;; Get token details for a property
+(define-read-only (get-property-tokens (property-id uint))
+  (map-get? property-tokens property-id)
+)
+
+;; Get user's token ownership for a property
+(define-read-only (get-token-balance (property-id uint) (owner principal))
+  (default-to { token-count: u0 } 
+    (map-get? token-ownership { property-id: property-id, owner: owner })
+  )
+)
+
+;; Get listing details
+(define-read-only (get-token-listing (listing-id uint))
+  (map-get? token-listings listing-id)
+)
+
+;; Get transaction details
+(define-read-only (get-transaction (transaction-id uint))
+  (map-get? property-transactions transaction-id)
+)
+
+;; Get all properties owned by a user
+(define-read-only (get-user-properties (user principal))
+  (default-to { owned-properties: (list) } (map-get? user-properties user))
+)
+
+;; Get contract statistics
+(define-read-only (get-contract-stats)
+  {
+    total-properties: (var-get total-properties),
+    total-listings: (var-get total-listings),
+    total-transactions: (var-get total-transactions),
+    platform-revenue: (var-get platform-revenue),
+    contract-paused: (var-get contract-paused)
+  }
+)
+
