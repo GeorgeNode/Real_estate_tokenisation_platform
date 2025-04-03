@@ -130,3 +130,151 @@
     )
   )
 )
+
+
+;; Add a new property
+(define-public (add-property (price uint) (location (string-ascii 50)) (property-type (string-ascii 20)) (area uint) (description (string-ascii 200)))
+  (let ((property-id (var-get total-properties)))
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (> price u0) err-invalid-price)
+    (if (is-contract-owner)
+      (begin
+        (map-set properties property-id {
+          owner: contract-owner,
+          price: price,
+          location: location,
+          tokenized: false,
+          property-type: property-type,
+          area: area,
+          for-sale: false,
+          creation-block: block-height,
+          description: description
+        })
+        (var-set total-properties (+ property-id u1))
+        (add-to-user-properties contract-owner property-id)
+        (ok property-id)
+      )
+      err-owner-only
+    )
+  )
+)
+
+;; Update property details
+(define-public (update-property (property-id uint) (price uint) (for-sale bool) (description (string-ascii 200)))
+  (let ((property (unwrap! (map-get? properties property-id) err-not-found)))
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (is-eq tx-sender (get owner property)) err-unauthorized)
+    (asserts! (> price u0) err-invalid-price)
+    (map-set properties property-id 
+      (merge property { 
+        price: price, 
+        for-sale: for-sale,
+        description: description
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Tokenize a property
+(define-public (tokenize-property (property-id uint) (total-tokens uint) (token-price uint))
+  (let ((property (unwrap! (map-get? properties property-id) err-not-found)))
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (is-eq (get owner property) tx-sender) err-unauthorized)
+    (asserts! (not (get tokenized property)) err-already-tokenized)
+    (asserts! (> total-tokens u0) err-invalid-token-amount)
+    (asserts! (> token-price u0) err-invalid-price)
+    
+    (map-set properties property-id (merge property { tokenized: true }))
+    (map-set property-tokens property-id {
+      total-supply: total-tokens,
+      tokens-remaining: total-tokens,
+      token-price: token-price,
+      creator: tx-sender
+    })
+    
+    ;; Set initial token ownership
+    (map-set token-ownership 
+      { property-id: property-id, owner: tx-sender }
+      { token-count: u0 }
+    )
+    
+    (ok true)
+  )
+)
+
+;; Buy property tokens directly from the property
+(define-public (buy-tokens (property-id uint) (token-amount uint))
+  (let (
+    (property (unwrap! (map-get? properties property-id) err-not-found))
+    (tokens (unwrap! (map-get? property-tokens property-id) err-not-found))
+    (platform-fee (calculate-platform-fee (* token-amount (get token-price tokens))))
+    (total-cost (+ (* token-amount (get token-price tokens)) platform-fee))
+  )
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (get tokenized property) err-not-tokenized)
+    (asserts! (<= token-amount (get tokens-remaining tokens)) err-insufficient-tokens)
+    (asserts! (> token-amount u0) err-invalid-token-amount)
+    
+    ;; Transfer STX to property owner
+    (try! (stx-transfer? total-cost tx-sender (get creator tokens)))
+    
+    ;; Update platform revenue
+    (var-set platform-revenue (+ (var-get platform-revenue) platform-fee))
+    
+    ;; Update property tokens remaining
+    (map-set property-tokens property-id 
+      (merge tokens { tokens-remaining: (- (get tokens-remaining tokens) token-amount) })
+    )
+    
+    ;; Update token ownership
+    (let ((current-ownership (default-to { token-count: u0 } 
+                              (map-get? token-ownership { property-id: property-id, owner: tx-sender }))))
+      (map-set token-ownership 
+        { property-id: property-id, owner: tx-sender }
+        { token-count: (+ (get token-count current-ownership) token-amount) }
+      )
+    )
+    
+    ;; Log the transaction
+    (log-transaction property-id (get creator tokens) tx-sender total-cost token-amount "MINT")
+    
+    (ok true)
+  )
+)
+
+;; Purchase an entire property (non-tokenized)
+(define-public (buy-property (property-id uint))
+  (let (
+    (property (unwrap! (map-get? properties property-id) err-not-found))
+    (platform-fee (calculate-platform-fee (get price property)))
+    (total-cost (+ (get price property) platform-fee))
+  )
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (not (get tokenized property)) err-already-tokenized)
+    (asserts! (get for-sale property) err-property-not-for-sale)
+    
+    ;; Transfer STX to property owner
+    (try! (stx-transfer? total-cost tx-sender (get owner property)))
+    
+    ;; Update platform revenue
+    (var-set platform-revenue (+ (var-get platform-revenue) platform-fee))
+    
+    ;; Update property ownership
+    (map-set properties property-id 
+      (merge property { 
+        owner: tx-sender,
+        for-sale: false
+      })
+    )
+    
+    ;; Update user properties lists
+    (add-to-user-properties tx-sender property-id)
+    
+    ;; Log the transaction
+    (log-transaction property-id (get owner property) tx-sender total-cost u1 "TRANSFER")
+    
+    (ok true)
+  )
+)
+
