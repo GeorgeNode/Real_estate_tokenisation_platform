@@ -278,3 +278,144 @@
   )
 )
 
+
+;; Create a secondary market listing for tokens
+(define-public (create-token-listing (property-id uint) (token-amount uint) (price-per-token uint))
+  (let (
+    (property (unwrap! (map-get? properties property-id) err-not-found))
+    (listing-id (var-get total-listings))
+    (ownership (default-to { token-count: u0 } 
+                (map-get? token-ownership { property-id: property-id, owner: tx-sender })))
+  )
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (get tokenized property) err-not-tokenized)
+    (asserts! (>= (get token-count ownership) token-amount) err-insufficient-tokens)
+    (asserts! (> token-amount u0) err-invalid-token-amount)
+    (asserts! (> price-per-token u0) err-invalid-price)
+    
+    ;; Create the listing
+    (map-set token-listings listing-id {
+      seller: tx-sender,
+      property-id: property-id,
+      token-amount: token-amount,
+      price-per-token: price-per-token,
+      active: true
+    })
+    
+    ;; Update total listings
+    (var-set total-listings (+ listing-id u1))
+    
+    ;; Log the transaction
+    (log-transaction property-id tx-sender tx-sender u0 token-amount "LISTING")
+    
+    (ok listing-id)
+  )
+)
+
+;; Buy tokens from a secondary market listing
+(define-public (buy-listed-tokens (listing-id uint))
+  (let (
+    (listing (unwrap! (map-get? token-listings listing-id) err-listing-not-found))
+    (property-id (get property-id listing))
+    (total-cost (* (get token-amount listing) (get price-per-token listing)))
+    (platform-fee (calculate-platform-fee total-cost))
+    (seller-amount (- total-cost platform-fee))
+  )
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (get active listing) err-listing-not-found)
+    (asserts! (not (is-eq tx-sender (get seller listing))) err-unauthorized)
+    
+    ;; Transfer STX to seller
+    (try! (stx-transfer? seller-amount tx-sender (get seller listing)))
+    
+    ;; Transfer platform fee
+    (try! (stx-transfer? platform-fee tx-sender contract-owner))
+    
+    ;; Update platform revenue
+    (var-set platform-revenue (+ (var-get platform-revenue) platform-fee))
+    
+    ;; Update seller's token ownership
+    (let ((seller-ownership (unwrap! (map-get? token-ownership 
+                                      { property-id: property-id, owner: (get seller listing) }) 
+                            err-not-token-owner)))
+      (map-set token-ownership 
+        { property-id: property-id, owner: (get seller listing) }
+        { token-count: (- (get token-count seller-ownership) (get token-amount listing)) }
+      )
+    )
+    
+    ;; Update buyer's token ownership
+    (let ((buyer-ownership (default-to { token-count: u0 } 
+                            (map-get? token-ownership { property-id: property-id, owner: tx-sender }))))
+      (map-set token-ownership 
+        { property-id: property-id, owner: tx-sender }
+        { token-count: (+ (get token-count buyer-ownership) (get token-amount listing)) }
+      )
+    )
+    
+    ;; Deactivate the listing
+    (map-set token-listings listing-id 
+      (merge listing { active: false })
+    )
+    
+    ;; Log the transaction
+    (log-transaction 
+      property-id 
+      (get seller listing) 
+      tx-sender 
+      total-cost 
+      (get token-amount listing) 
+      "TRANSFER"
+    )
+    
+    (ok true)
+  )
+)
+
+;; Cancel a token listing
+(define-public (cancel-token-listing (listing-id uint))
+  (let ((listing (unwrap! (map-get? token-listings listing-id) err-listing-not-found)))
+    (asserts! (is-eq tx-sender (get seller listing)) err-unauthorized)
+    (asserts! (get active listing) err-listing-not-found)
+    
+    (map-set token-listings listing-id 
+      (merge listing { active: false })
+    )
+    
+    (ok true)
+  )
+)
+
+;; Transfer tokens to another user
+(define-public (transfer-tokens (property-id uint) (token-amount uint) (recipient principal))
+  (let (
+    (sender-ownership (unwrap! (map-get? token-ownership 
+                                { property-id: property-id, owner: tx-sender }) 
+                      err-not-token-owner))
+  )
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (>= (get token-count sender-ownership) token-amount) err-insufficient-tokens)
+    (asserts! (> token-amount u0) err-invalid-token-amount)
+    (asserts! (not (is-eq tx-sender recipient)) err-unauthorized)
+    
+    ;; Update sender's token ownership
+    (map-set token-ownership 
+      { property-id: property-id, owner: tx-sender }
+      { token-count: (- (get token-count sender-ownership) token-amount) }
+    )
+    
+    ;; Update recipient's token ownership
+    (let ((recipient-ownership (default-to { token-count: u0 } 
+                                (map-get? token-ownership { property-id: property-id, owner: recipient }))))
+      (map-set token-ownership 
+        { property-id: property-id, owner: recipient }
+        { token-count: (+ (get token-count recipient-ownership) token-amount) }
+      )
+    )
+    
+    ;; Log the transaction
+    (log-transaction property-id tx-sender recipient u0 token-amount "TRANSFER")
+    
+    (ok true)
+  )
+)
