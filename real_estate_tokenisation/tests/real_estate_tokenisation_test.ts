@@ -545,13 +545,13 @@ Clarinet.test({
 });
 
 Clarinet.test({
+
     name: "Ensure that contract can be paused by owner",
     async fn(chain: Chain, accounts: Map<string, Account>)
     {
         const deployer = accounts.get('deployer')!;
         const wallet1 = accounts.get('wallet_1')!;
 
-        // Pause contract
         let block = chain.mineBlock([
             Tx.contractCall(CONTRACT_NAME, 'set-contract-pause', [
                 types.bool(true)
